@@ -1,171 +1,182 @@
 import json
+import os
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+import pandas as pd
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
-    QHeaderView,
+    QInputDialog,
     QLabel,
+    QListWidget,
     QMainWindow,
+    QMessageBox,
     QPushButton,
+    QSplitter,
     QStatusBar,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from src.core.scanner import StockScanner
+from src.api.kis_api import KISApi
 from src.ui.detail_window import DetailWindow
 from src.utils.logger import logger
-
-
-# 스캔을 수행할 백그라운드 스레드
-class ScanWorker(QThread):
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
-
-    def __init__(self, theme_name, timeframe, condition):  # 인자 추가
-        super().__init__()
-        self.theme_name = theme_name
-        self.timeframe = timeframe
-        self.condition = condition
-        self.scanner = StockScanner()
-
-    def run(self):
-        try:
-            # scanner.py의 함수가 3개의 인자를 받도록 수정되어야 합니다.
-            results = self.scanner.scan_by_theme(
-                self.theme_name, self.timeframe, self.condition
-            )
-            self.finished.emit(results)
-        except Exception as e:
-            self.error.emit(str(e))
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.init_ui()  # 여기서 아래 메서드를 호출합니다.
+        self.api = KISApi()
+        self.categories = {}
+        self.stock_name_map = {}
+        self.load_stock_master()
+        self.init_ui()
         self.load_categories()
+
+    def load_stock_master(self):
+        """저장된 전종목 CSV가 있다면 로드하여 이름을 찾음"""
+        try:
+            csv_files = [
+                f
+                for f in os.listdir(".")
+                if f.startswith("all_stocks_") and f.endswith(".csv")
+            ]
+            if csv_files:
+                latest_csv = sorted(csv_files)[-1]
+                df = pd.read_csv(latest_csv, dtype={"종목코드": str})
+                self.stock_name_map = dict(zip(df["종목코드"], df["종목명"]))
+                logger.info(f"마스터 데이터 로드 완료: {latest_csv}")
+        except Exception as e:
+            logger.error(f"마스터 데이터 로드 실패: {e}")
 
     def init_ui(self):
-        # 1. 창 기본 설정
-        self.setWindowTitle("Inz-Stock-Advisor v1.0")
-        self.resize(1000, 700)  # 인터페이스가 늘어났으므로 창 크기를 조금 키웁니다.
+        self.setWindowTitle("Inz-Stock-Advisor v1.2")
+        self.resize(1400, 900)
 
-        # 2. 메인 위젯 및 레이아웃
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QHBoxLayout(main_widget)
 
-        # 3. 컨트롤바 (상단 검색 조건 설정)
-        top_layout = QHBoxLayout()
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 테마 선택
-        self.category_combo = QComboBox()
-        self.load_categories()
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
 
-        # 타임프레임 선택 (3분봉, 일봉, 주봉, 월봉)
+        self.fetch_all_btn = QPushButton("📂 전종목 리스트 추출 (CSV)")
+        self.fetch_all_btn.clicked.connect(self.on_download_csv)
+        self.fetch_all_btn.setStyleSheet(
+            "height: 45px; font-weight: bold; background-color: #34495e; color: white;"
+        )
+
         self.timeframe_combo = QComboBox()
         self.timeframe_combo.addItems(["일봉", "3분봉", "주봉", "월봉"])
+        self.timeframe_combo.currentIndexChanged.connect(self.refresh_current_chart)
 
-        # 지표 조건 선택 (상단/하단/전체)
-        self.condition_combo = QComboBox()
-        self.condition_combo.addItems(["전체", "하단 터치", "상단 터치"])
+        self.category_combo = QComboBox()
+        self.category_combo.currentIndexChanged.connect(self.on_category_changed)
 
-        self.scan_btn = QPushButton("종목 스캔 시작")
+        self.stock_list = QListWidget()
+        self.stock_list.itemClicked.connect(self.on_stock_clicked)
 
-        # 컨트롤바 위젯 배치
-        top_layout.addWidget(QLabel("테마:"))
-        top_layout.addWidget(self.category_combo, 2)  # 테마 칸을 조금 더 넓게
-        top_layout.addWidget(QLabel("단위:"))
-        top_layout.addWidget(self.timeframe_combo, 1)
-        top_layout.addWidget(QLabel("조건:"))
-        top_layout.addWidget(self.condition_combo, 1)
-        top_layout.addWidget(self.scan_btn)
+        self.add_stock_btn = QPushButton("+ 종목 추가 (코드)")
+        self.add_stock_btn.clicked.connect(self.add_custom_stock)
 
-        layout.addLayout(top_layout)
+        left_layout.addWidget(self.fetch_all_btn)
+        left_layout.addWidget(QLabel("⏰ 차트 주기:"))
+        left_layout.addWidget(self.timeframe_combo)
+        left_layout.addWidget(QLabel("📂 카테고리:"))
+        left_layout.addWidget(self.category_combo)
+        left_layout.addWidget(QLabel("📋 종목 목록:"))
+        left_layout.addWidget(self.stock_list)
+        left_layout.addWidget(self.add_stock_btn)
 
-        # 4. 결과 테이블 생성
-        self.result_table = QTableWidget()
-        self.result_table.setColumnCount(3)
-        self.result_table.setHorizontalHeaderLabels(
-            ["종목코드", "현재가", "상태 (볼린저밴드)"]
-        )
-        self.result_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        layout.addWidget(self.result_table)
+        self.detail_container = QWidget()
+        self.detail_layout = QVBoxLayout(self.detail_container)
+        self.placeholder = QLabel("왼쪽 목록에서 종목을 선택하세요.")
+        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.detail_layout.addWidget(self.placeholder)
 
-        # 5. 상태바
+        self.splitter.addWidget(left_panel)
+        self.splitter.addWidget(self.detail_container)
+        self.splitter.setStretchFactor(1, 4)
+
+        layout.addWidget(self.splitter)
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("준비 완료")
-
-        # 6. 이벤트 연결
-        self.scan_btn.clicked.connect(self.start_scan)
-        self.result_table.itemDoubleClicked.connect(self.show_detail)
 
     def load_categories(self):
-        """JSON 데이터와 전체 옵션을 콤보박스에 로드"""
         try:
-            # 전체 스캔 옵션 상단에 추가
-            self.category_combo.addItem("전체 (KOSPI)")
-            self.category_combo.addItem("전체 (KOSDAQ)")
-
             with open("src/data/category_map.json", "r", encoding="utf-8") as f:
-                categories = json.load(f)
-                self.category_combo.addItems(categories.keys())
+                self.categories = json.load(f)
+                self.category_combo.clear()
+                self.category_combo.addItems(self.categories.keys())
         except Exception as e:
             logger.error(f"카테고리 로드 실패: {e}")
 
-    def start_scan(self):
-        theme = self.category_combo.currentText()
-        # UI에서 선택한 값을 파라미터로 매핑
-        tf_map = {"일봉": "D", "3분봉": "3m", "주봉": "W", "월봉": "M"}
-        timeframe = tf_map[self.timeframe_combo.currentText()]
-        condition = self.condition_combo.currentText()
+    def on_category_changed(self):
+        category = self.category_combo.currentText()
+        self.stock_list.clear()
+        if category in self.categories:
+            for code in self.categories[category]:
+                # 맵에 이름이 없으면 기본적으로 "알 수 없음" 으로 표시
+                name = self.stock_name_map.get(code, "알 수 없음")
+                self.stock_list.addItem(f"{name} ({code})")
 
-        self.scan_btn.setEnabled(False)
-        self.statusBar().showMessage(f"[{theme} / {timeframe}] 스캔 중...")
-
-        # Worker 스레드에 파라미터 전달
-        self.worker = ScanWorker(theme, timeframe, condition)
-        self.worker.finished.connect(self.on_scan_finished)
-        self.worker.error.connect(self.on_scan_error)
-        self.worker.start()
-
-    def on_scan_finished(self, results):
-        self.scan_btn.setEnabled(True)
-        self.statusBar().showMessage(f"스캔 완료: {len(results)}개 종목 발견")
-
-        self.result_table.setRowCount(len(results))
-        for i, stock in enumerate(results):
-            self.result_table.setItem(i, 0, QTableWidgetItem(stock["symbol"]))
-            # 천단위 콤마 포맷팅
-            price_item = QTableWidgetItem(f"{int(stock['price']):,}")
-            price_item.setTextAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    def on_download_csv(self):
+        self.statusBar().showMessage("전체 종목 수집 중...")
+        file_name = self.api.download_all_symbols_to_csv()
+        if file_name:
+            QMessageBox.information(
+                self, "완료", f"전종목 리스트가 저장되었습니다:\n{file_name}"
             )
-            self.result_table.setItem(i, 1, price_item)
+            # CSV 다운로드 완료 시 즉시 마스터 데이터를 다시 읽고 리스트를 새로고침
+            self.load_stock_master()
+            self.on_category_changed()
+        self.statusBar().showMessage("준비 완료")
 
-            status_item = QTableWidgetItem(stock["status"])
-            # 하단 터치는 파란색, 상단 터치는 빨간색 (가독성)
-            if "하단" in stock["status"]:
-                status_item.setForeground(Qt.GlobalColor.blue)
+    def on_stock_clicked(self, item):
+        display_text = item.text()
+        symbol = display_text.split("(")[-1].replace(")", "").strip()
+        timeframe_text = self.timeframe_combo.currentText()
+
+        for i in reversed(range(self.detail_layout.count())):
+            w = self.detail_layout.itemAt(i).widget()
+            if w:
+                w.deleteLater()
+
+        detail_view = DetailWindow(symbol, timeframe_text)
+        self.detail_layout.addWidget(detail_view)
+
+    def refresh_current_chart(self):
+        current_item = self.stock_list.currentItem()
+        if current_item:
+            self.on_stock_clicked(current_item)
+
+    def add_custom_stock(self):
+        category = self.category_combo.currentText()
+        if not category:
+            return
+
+        code, ok = QInputDialog.getText(
+            self, "종목 추가", "추가할 종목 코드를 입력하세요:"
+        )
+        if ok and code:
+            if code not in self.categories.get(category, []):
+                self.categories[category].append(code)
+                try:
+                    with open("src/data/category_map.json", "w", encoding="utf-8") as f:
+                        json.dump(self.categories, f, ensure_ascii=False, indent=2)
+                    self.on_category_changed()
+                except Exception as e:
+                    logger.error(f"카테고리 파일 저장 중 에러 발생: {e}")
             else:
-                status_item.setForeground(Qt.GlobalColor.red)
-            self.result_table.setItem(i, 2, status_item)
-
-    def on_scan_error(self, error_msg):
-        self.scan_btn.setEnabled(True)
-        self.statusBar().showMessage(f"에러 발생: {error_msg}")
-        logger.error(error_msg)
-
-    def show_detail(self, item):
-        # 어떤 행이 클릭되었는지 확인하고 종목코드(0번 열) 가져오기
-        row = item.row()
-        symbol = self.result_table.item(row, 0).text()
-
-        detail_win = DetailWindow(symbol, self)
-        detail_win.exec()  # 모달 창으로 띄움
+                QMessageBox.warning(self, "경고", "이미 추가된 종목입니다.")
+            if code not in self.categories.get(category, []):
+                self.categories[category].append(code)
+                try:
+                    with open("src/data/category_map.json", "w", encoding="utf-8") as f:
+                        json.dump(self.categories, f, ensure_ascii=False, indent=2)
+                    self.on_category_changed()
+                except Exception as e:
+                    logger.error(f"카테고리 파일 저장 중 에러 발생: {e}")
+            else:
+                QMessageBox.warning(self, "경고", "이미 추가된 종목입니다.")

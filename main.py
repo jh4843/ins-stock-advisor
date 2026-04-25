@@ -4,7 +4,7 @@ import traceback
 from PyQt6.QtWidgets import QApplication
 
 from src.api.auth_manager import AuthManager
-from src.ui.main_window import MainWindow  # 이 줄만 남기고 아래 .py 라인은 삭제하세요
+from src.ui.main_window import MainWindow
 from src.utils.logger import logger
 
 

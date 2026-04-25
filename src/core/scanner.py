@@ -66,75 +66,70 @@ class StockScanner:
         return found_stocks
 
     def scan_by_theme(self, theme_name: str, timeframe: str, condition: str):
-        """
-        사용자 정의 조건(테마, 타임프레임, 상/하단)에 따른 종목 스캔
-        """
-        # 1. 대상 종목 리스트 결정
-        if theme_name == "전체 (KOSPI)":
-            symbols = self.api.fetch_all_symbols("300")
-        elif theme_name == "전체 (KOSDAQ)":
-            symbols = self.api.fetch_all_symbols("400")
+        if "전체" in theme_name:
+            market_code = "300" if "KOSPI" in theme_name else "400"
+            symbols = self.api.fetch_all_symbols(market_code)
         else:
             symbols = self.category_map.get(theme_name, [])
 
-        found_stocks = []
-        total = len(symbols)
+        # [수정] 확보된 3개 종목이 무엇인지 로그로 출력
         logger.info(
-            f"[{theme_name}] {timeframe} 단위 / {condition} 조건 스캔 시작... (총 {total}종목)"
+            f">>> 스캔 대상 리스트 확보: {len(symbols)}개 종목 ({', '.join(symbols)})"
         )
 
-        for i, symbol in enumerate(symbols):
-            # API 호출 제한 준수를 위해 주기적으로 진행 상황 기록
-            if i % 10 == 0:
-                logger.info(f"진행 상황: {i}/{total} ({int(i / total * 100)}%)")
+        found_stocks = []
+        for symbol in symbols:
+            # 개별 종목 분석 시작 로그
+            logger.debug(f"[{symbol}] 분석 시작...")
 
-            # 2. 지정된 타임프레임으로 데이터 호출
             raw_data = self.api.fetch_ohlcv(symbol, timeframe)
-            if not raw_data or len(raw_data) < 20:  # 지표 계산을 위해 최소 20개 필요
+            if not raw_data or len(raw_data) < 20:
+                logger.warning(
+                    f"[{symbol}] 데이터 부족으로 스킵 (수신된 데이터: {len(raw_data) if raw_data else 0}개)"
+                )
                 continue
 
-            # 3. DataFrame 전처리
             df = pd.DataFrame(raw_data)
-            # KIS API 응답 컬럼 매핑 (stck_clpr: 종가, stck_oprc: 시가 등)
-            df = df[
-                ["stck_clpr", "stck_oprc", "stck_hgpr", "stck_lwpr", "acml_vol"]
-            ].copy()
-            df.columns = ["close", "open", "high", "low", "volume"]
-            df = df.astype(float)
+            df = df[["stck_clpr", "stck_oprc", "stck_hgpr", "stck_lwpr"]].copy()
+            df.columns = ["close", "open", "high", "low"]
+            df = df.astype(float).iloc[::-1].reset_index(drop=True)
 
-            # ★ 중요: KIS 데이터는 최신순이므로 지표 계산을 위해 과거->현재 순으로 뒤집음
-            df = df.iloc[::-1].reset_index(drop=True)
-
-            # 4. 볼린저밴드 계산 ($20, 2$)
             df = self.calculate_bollinger_bands(df)
+            last = df.iloc[-1]
+            bbl_cols = [c for c in df.columns if c.startswith("BBL_")]
+            bbu_cols = [c for c in df.columns if c.startswith("BBU_")]
 
-            # 최신 행 데이터 추출
-            last_row = df.iloc[-1]
-            curr_price = last_row["close"]
-            lower_band = last_row["BBL_20_2.0"]
-            upper_band = last_row["BBU_20_2.0"]
-
-            # 5. 사용자 지정 조건에 따른 필터링
-            is_match = False
-            status = ""
-
-            # 조건 판별식: P <= Lower Band 또는 P >= Upper Band
-            # 조건 판별식: 너무 엄격하면 0개이므로 약간의 마진(0.5%)을 줍니다.
-            if condition == "하단 터치" or condition == "전체":
-                if curr_price <= lower_band * 1.005:  # 하단 근처 0.5% 이내 접근
-                    is_match, status = True, "하단 근접/터치"
-
-            if not is_match and (condition == "상단 터치" or condition == "전체"):
-                if curr_price >= upper_band * 0.995:  # 상단 근처 0.5% 이내 접근
-                    is_match, status = True, "상단 근접/터치"
-
-            # 6. 결과 저장
-            if is_match:
-                logger.info(
-                    f"발견: {symbol} | 가격: {int(curr_price):,} | 상태: {status}"
+            if not bbl_cols or not bbu_cols:
+                logger.warning(
+                    f"[{symbol}] 볼린저밴드 지표 생성 실패 (컬럼 없음). 현재 컬럼: {df.columns.tolist()}"
                 )
+                continue
+
+            # 찾은 첫 번째 컬럼에서 값을 가져옵니다.
+            curr = last["close"]
+            lower = last[bbl_cols[0]]
+            upper = last[bbu_cols[0]]
+
+            # NaN 체크 (지표 계산이 되었으나 값이 없는 경우)
+            if pd.isna(lower) or pd.isna(upper):
+                logger.debug(f"[{symbol}] 지표 값이 NaN입니다. 스킵합니다.")
+                continue
+
+            # 상세 값 로그 (app.log에서 확인 가능)
+            logger.debug(
+                f"[{symbol}] 결과 - 현재가: {curr}, 하단: {lower:.2f}, 상단: {upper:.2f}"
+            )
+
+            is_match = False
+            if (condition == "하단 터치" or condition == "전체") and curr <= lower:
+                is_match = True
+            elif (condition == "상단 터치" or condition == "전체") and curr >= upper:
+                is_match = True
+
+            if is_match:
+                logger.info(f"★ 조건 일치 종목 발견: {symbol} ★")
                 found_stocks.append(
-                    {"symbol": symbol, "price": curr_price, "status": status}
+                    {"symbol": symbol, "price": curr, "status": "조건 일치"}
                 )
 
         return found_stocks
