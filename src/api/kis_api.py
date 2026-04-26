@@ -1,8 +1,6 @@
-import os
 import time
-import urllib.request
-import zipfile
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -37,28 +35,27 @@ class KISApi:
 
         try:
             for file_name, market_name in markets:
-                logger.info(f"{market_name} 마스터 파일 수집 중...")
+                # ... (기존 마스터 파일 다운로드 및 파싱 로직 동일) ...
+                logger.info(f"{market_name} 수집 중...")
                 zip_url = f"{base_url}{file_name}.mst.zip"
                 zip_path = f"{file_name}.zip"
                 mst_path = f"{file_name}.mst"
 
-                # 1. KIS 서버에서 압축파일 다이렉트 다운로드
+                import os
+                import urllib.request
+                import zipfile
+
                 urllib.request.urlretrieve(zip_url, zip_path)
 
-                # 2. 압축 해제
                 with zipfile.ZipFile(zip_path, "r") as zip_ref:
                     zip_ref.extractall()
 
-                # 3. 바이너리 모드로 읽어서 바이트 단위로 파싱 (한국투자증권 공식 규격)
                 with open(mst_path, "rb") as f:
                     for line in f:
                         try:
-                            # 0~9바이트: 단축코드 (ex. A005930)
                             code = line[0:9].decode("cp949").strip()
                             if len(code) >= 6:
-                                code = code[-6:]  # 실제 6자리 종목코드만 추출
-
-                            # 21~61바이트: 한글종목명
+                                code = code[-6:]
                             name = line[21:61].decode("cp949").strip()
 
                             if code and name:
@@ -72,24 +69,25 @@ class KISApi:
                         except Exception:
                             continue
 
-                # 4. 다 쓴 임시 파일 깨끗하게 삭제
                 if os.path.exists(zip_path):
                     os.remove(zip_path)
                 if os.path.exists(mst_path):
                     os.remove(mst_path)
 
-                logger.info(f"{market_name} 수집 완료.")
-
-            # 5. DataFrame 변환 및 CSV 저장
+            # 5. DataFrame 변환 및 특정 사용자 폴더에 CSV 고정 저장
             if all_data:
                 df = pd.DataFrame(all_data)
-                # 순수 숫자로 이루어진 주식 종목코드만 남김 (ELW, ETN 등 필터링 목적)
                 df = df[df["종목코드"].str.isnumeric()]
 
-                file_name = f"all_stocks_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
-                df.to_csv(file_name, index=False, encoding="utf-8-sig")
-                logger.info(f"총 {len(df)}개 종목 마스터 데이터 저장 완료: {file_name}")
-                return file_name
+                # 사용자 홈 디렉터리 하위에 앱 폴더 생성
+                user_data_dir = Path.home() / ".inz_stock_advisor" / "data"
+                user_data_dir.mkdir(parents=True, exist_ok=True)
+
+                file_path = user_data_dir / "all_stocks.csv"
+                df.to_csv(file_path, index=False, encoding="utf-8-sig")
+
+                logger.info(f"총 {len(df)}개 종목 마스터 데이터 저장 완료: {file_path}")
+                return str(file_path)
 
             return None
 

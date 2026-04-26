@@ -1,5 +1,5 @@
 import json
-import os
+from pathlib import Path
 
 import pandas as pd
 from PyQt6.QtCore import Qt
@@ -34,18 +34,20 @@ class MainWindow(QMainWindow):
         self.load_categories()
 
     def load_stock_master(self):
-        """저장된 전종목 CSV가 있다면 로드하여 이름을 찾음"""
+        """저장된 전종목 CSV가 있다면 로드, 없으면 최초 1회 다운로드"""
+        user_data_dir = Path.home() / ".inz_stock_advisor" / "data"
+        csv_path = user_data_dir / "all_stocks.csv"
+
+        # 프로그램 처음 시작 시 파일이 없으면 자동 다운로드
+        if not csv_path.exists():
+            logger.info("마스터 데이터가 없습니다. 최초 종목 다운로드를 진행합니다...")
+            self.api.download_all_symbols_to_csv()
+
         try:
-            csv_files = [
-                f
-                for f in os.listdir(".")
-                if f.startswith("all_stocks_") and f.endswith(".csv")
-            ]
-            if csv_files:
-                latest_csv = sorted(csv_files)[-1]
-                df = pd.read_csv(latest_csv, dtype={"종목코드": str})
+            if csv_path.exists():
+                df = pd.read_csv(csv_path, dtype={"종목코드": str})
                 self.stock_name_map = dict(zip(df["종목코드"], df["종목명"]))
-                logger.info(f"마스터 데이터 로드 완료: {latest_csv}")
+                logger.info(f"마스터 데이터 로드 완료: {csv_path}")
         except Exception as e:
             logger.error(f"마스터 데이터 로드 실패: {e}")
 
@@ -134,8 +136,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("준비 완료")
 
     def on_stock_clicked(self, item):
-        display_text = item.text()
+        display_text = item.text()  # 예: 삼성전자 (005930)
+
+        # 괄호 안의 코드와 괄호 밖의 종목명을 분리
         symbol = display_text.split("(")[-1].replace(")", "").strip()
+        stock_name = display_text.rsplit("(", 1)[0].strip()
+
         timeframe_text = self.timeframe_combo.currentText()
 
         for i in reversed(range(self.detail_layout.count())):
@@ -143,7 +149,8 @@ class MainWindow(QMainWindow):
             if w:
                 w.deleteLater()
 
-        detail_view = DetailWindow(symbol, timeframe_text)
+        # DetailWindow에 종목명(stock_name)도 함께 전달
+        detail_view = DetailWindow(symbol, stock_name, timeframe_text)
         self.detail_layout.addWidget(detail_view)
 
     def refresh_current_chart(self):

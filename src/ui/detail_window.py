@@ -7,9 +7,11 @@ from src.ui.components.chart_view import StockChart
 
 
 class DetailWindow(QWidget):
-    def __init__(self, symbol, timeframe_text="일봉", parent=None):
+    # 생성자에 stock_name 파라미터 추가
+    def __init__(self, symbol, stock_name, timeframe_text="일봉", parent=None):
         super().__init__(parent)
         self.symbol = symbol
+        self.stock_name = stock_name
         self.timeframe_text = timeframe_text
         self.api = KISApi()
         self.scanner = StockScanner()
@@ -18,8 +20,10 @@ class DetailWindow(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+
+        # "종목명(코드)" 형식으로 로딩 텍스트 표시
         self.info_label = QLabel(
-            f"[{self.symbol}] 데이터 분석 중... ({self.timeframe_text})"
+            f"[{self.stock_name}({self.symbol})] 데이터 분석 중... ({self.timeframe_text})"
         )
         self.info_label.setStyleSheet(
             "font-size: 18px; font-weight: bold; color: #4a90e2; padding: 5px;"
@@ -118,19 +122,18 @@ class DetailWindow(QWidget):
             self.info_label.setText(f"[{self.symbol}] 차트 지표 계산 에러: {e}")
             return
 
-        # 4. 상단 종목명 및 현재가 업데이트
+        # 4. 상단 종목명 및 현재가 업데이트 부분 수정
         fund = self.api.fetch_stock_fundamental(self.symbol)
-        name = self.symbol
         price = 0
 
         if fund:
-            name = fund.get("hts_kor_isnm", self.symbol)
             raw_price = fund.get("stck_prpr", 0)
             try:
                 price = int(raw_price) if raw_price else 0
             except (ValueError, TypeError):
                 price = 0
 
+        # API 응답 이름 대신 UI에서 넘겨받은 깔끔한 종목명 사용, "종목명(코드)" 포맷 적용
         self.info_label.setText(
-            f"{name} ({self.symbol}) | 현재가: {price:,}원 | {self.timeframe_text}"
+            f"{self.stock_name}({self.symbol}) | 현재가: {price:,}원 | {self.timeframe_text}"
         )
