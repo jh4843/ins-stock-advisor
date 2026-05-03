@@ -33,6 +33,10 @@ class Cache:
                     fetched_at TEXT
                 )
             """)
+            try:
+                conn.execute("ALTER TABLE overview_cache ADD COLUMN raw_data TEXT")
+            except Exception:
+                pass
 
     # ── OHLCV ──────────────────────────────────────────────────────────────
 
@@ -69,7 +73,7 @@ class Cache:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 row = conn.execute(
-                    "SELECT sector, industry, name, fetched_at FROM overview_cache WHERE symbol=?",
+                    "SELECT sector, industry, name, fetched_at, raw_data FROM overview_cache WHERE symbol=?",
                     (symbol,),
                 ).fetchone()
             if not row:
@@ -77,17 +81,21 @@ class Cache:
             fetched_at = datetime.fromisoformat(row[3])
             if datetime.now() - fetched_at > timedelta(days=ttl_days):
                 return None
-            return {"sector": row[0], "industry": row[1], "name": row[2]}
+            result = {"sector": row[0], "industry": row[1], "name": row[2]}
+            if row[4]:
+                result.update(json.loads(row[4]))
+            return result
         except Exception as e:
             logger.warning(f"[Cache] overview 읽기 실패: {e}")
             return None
 
-    def set_overview(self, symbol: str, sector: str, industry: str, name: str):
+    def set_overview(self, symbol: str, sector: str, industry: str, name: str, raw_data: dict | None = None):
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute(
-                    "INSERT OR REPLACE INTO overview_cache VALUES (?, ?, ?, ?, ?)",
-                    (symbol, sector, industry, name, datetime.now().isoformat()),
+                    "INSERT OR REPLACE INTO overview_cache VALUES (?, ?, ?, ?, ?, ?)",
+                    (symbol, sector, industry, name, datetime.now().isoformat(),
+                     json.dumps(raw_data) if raw_data else None),
                 )
         except Exception as e:
             logger.warning(f"[Cache] overview 저장 실패: {e}")

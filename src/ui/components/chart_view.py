@@ -16,7 +16,8 @@ class StockChart(pg.PlotWidget):
 
         self.setBackground("#1e1e1e")
         self.showGrid(x=True, y=True, alpha=0.3)
-        self.setLabel("left", "가격", units="원")
+        self.currency = "원"
+        self.setLabel("left", "가격", units=self.currency)
         self.setLabel("bottom", "시간/날짜")
 
         self.df = None
@@ -52,6 +53,15 @@ class StockChart(pg.PlotWidget):
         self.proxy = pg.SignalProxy(
             self.scene().sigMouseMoved, rateLimit=60, slot=self.mouse_moved
         )
+
+    def set_currency(self, currency: str):
+        self.currency = currency
+        self.setLabel("left", "가격", units=currency)
+
+    def _format_price(self, value):
+        if self.currency == "USD":
+            return f"{value:,.2f} USD"
+        return f"{int(value):,}원"
 
     def update_chart(self, df):
         self.df = df
@@ -140,7 +150,7 @@ class StockChart(pg.PlotWidget):
                 html_text = (
                     f"<div style='color: #eeeeee; font-family: sans-serif; font-size: 13px;'>"
                     f"<b>{date_str}</b><br><hr style='border: 1px solid #444;'/>"
-                    f"<span style='color: #aaaaaa;'>현재가:</span> <b style='color: #00bfff;'>{close_p:,.0f}원</b><br>"
+                    f"<span style='color: #aaaaaa;'>현재가:</span> <b style='color: #00bfff;'>{self._format_price(close_p)}</b><br>"
                     f"<span style='color: #aaaaaa;'>BB상단:</span> <b style='color: #ffff00;'>{upper_b:,.0f}</b><br>"
                     f"<span style='color: #aaaaaa;'>BB하단:</span> <b style='color: #ffff00;'>{lower_b:,.0f}</b>"
                     f"</div>"

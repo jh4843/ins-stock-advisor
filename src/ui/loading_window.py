@@ -26,7 +26,13 @@ class SetupThread(QThread):
                 self.progress.emit("KIS 전종목 마스터 파일 다운로드 중...")
                 KISApi().download_all_symbols_to_csv()
 
-            # 2. 카테고리 빌드
+            # 2. multitheme CSV → category_map.json 동기화
+            self.progress.emit("테마 데이터 동기화 중...")
+            categorizer.sync_themes_from_multitheme(
+                progress_cb=lambda msg: self.progress.emit(msg)
+            )
+
+            # 3. 카테고리 빌드
             cats = categorizer.load_categories(
                 force_rebuild=self.force_rebuild,
                 progress_cb=lambda msg: self.progress.emit(msg),

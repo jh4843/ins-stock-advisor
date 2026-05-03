@@ -50,3 +50,7 @@ ins-stock-advisor
    └─ __init__.py
 
 ```
+
+### 4. 실행
+
+python main.py

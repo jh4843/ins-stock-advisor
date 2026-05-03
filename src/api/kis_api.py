@@ -14,6 +14,31 @@ class KISApi:
     def __init__(self):
         self.auth = AuthManager()
 
+    def _request(self, method: str, url: str, tr_id: str, **kwargs) -> dict | None:
+        """KIS REST 호출 공통 처리: HTTP/rt_cd 검증과 rate limit 방어."""
+        try:
+            res = requests.request(
+                method,
+                url,
+                headers=self.get_headers(tr_id),
+                timeout=10,
+                **kwargs,
+            )
+            if res.status_code != 200:
+                logger.error(f"KIS HTTP 오류 ({res.status_code}): {res.text[:200]}")
+                return None
+
+            data = res.json()
+            if data.get("rt_cd") != "0":
+                logger.error(f"KIS API 거절 응답: {data.get('msg1', data)}")
+                return None
+            return data
+        except Exception as e:
+            logger.error(f"KIS 요청 실패: {e}")
+            return None
+        finally:
+            time.sleep(Config.API_DELAY)
+
     def get_headers(self, tr_id: str):
         """기본 헤더 생성"""
         return {
@@ -127,15 +152,8 @@ class KISApi:
                 }
                 tr_id = "FHKST03010100"
 
-            res = requests.get(url, headers=self.get_headers(tr_id), params=params)
-            time.sleep(Config.API_DELAY)
-
-            if res.status_code == 200:
-                data = res.json()
-                if data.get("rt_cd") != "0":
-                    logger.error(f"[{symbol}] KIS API 거절 응답: {data.get('msg1')}")
-                return data.get("output2", [])
-            return []
+            data = self._request("GET", url, tr_id, params=params)
+            return data.get("output2", []) if data else []
 
         except Exception as e:
             logger.error(f"[{symbol}] fetch_ohlcv 에러: {e}")
@@ -146,12 +164,8 @@ class KISApi:
         url = f"{Config.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
         try:
-            res = requests.get(
-                url, headers=self.get_headers("FHKST01010100"), params=params
-            )
-            if res.status_code == 200:
-                return res.json().get("output", {})
+            data = self._request("GET", url, "FHKST01010100", params=params)
+            return data.get("output", {}) if data else {}
         except Exception as e:
             logger.error(f"[{symbol}] 기본정보 조회 에러: {e}")
-        return {}
         return {}

@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from src.api.kis_api import KISApi
 from src.core import categorizer
+from src.ui.category_edit_dialog import CategoryEditDialog
 from src.ui.detail_window import DetailWindow
 from src.utils.logger import logger
 
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         self.api = KISApi()
         self.categories: dict[str, list] = initial_categories
         self.stock_name_map: dict[str, str] = {}
+        self.all_stocks_df: pd.DataFrame = pd.DataFrame()
         self._refresh_thread: RefreshThread | None = None
 
         self._load_stock_master()
@@ -62,10 +64,20 @@ class MainWindow(QMainWindow):
         try:
             if csv_path.exists():
                 df = pd.read_csv(csv_path, dtype={"종목코드": str})
+                self.all_stocks_df  = df
                 self.stock_name_map = dict(zip(df["종목코드"], df["종목명"]))
                 logger.info(f"마스터 데이터 로드: {len(self.stock_name_map):,}개")
         except Exception as e:
             logger.error(f"마스터 데이터 로드 실패: {e}")
+
+    def _build_theme_map(self) -> dict[str, str]:
+        """categories dict를 역순 순회해 {종목코드: 테마명} 반환"""
+        result: dict[str, str] = {}
+        for theme, stocks in self.categories.items():
+            for entry in stocks:
+                code = entry["code"] if isinstance(entry, dict) else entry
+                result[code] = theme
+        return result
 
     # ── UI 초기화 ──────────────────────────────────────────────────────────
 
@@ -88,6 +100,18 @@ class MainWindow(QMainWindow):
             "height: 40px; font-weight: bold; background-color: #34495e; color: white;"
         )
 
+        self.all_stocks_btn = QPushButton("📋 전체 종목 보기")
+        self.all_stocks_btn.clicked.connect(self._on_show_all_stocks)
+        self.all_stocks_btn.setStyleSheet(
+            "height: 34px; background-color: #1a5276; color: #7fb3d3;"
+        )
+
+        self.edit_theme_btn = QPushButton("📝 테마 편집")
+        self.edit_theme_btn.clicked.connect(self._open_category_editor)
+        self.edit_theme_btn.setStyleSheet(
+            "height: 34px; background-color: #1a6b3c; color: white;"
+        )
+
         self.refresh_btn = QPushButton("🔄 카테고리 새로고침")
         self.refresh_btn.clicked.connect(self._on_refresh_categories)
         self.refresh_btn.setStyleSheet(
@@ -108,6 +132,8 @@ class MainWindow(QMainWindow):
         self.add_stock_btn.clicked.connect(self._add_custom_stock)
 
         left_layout.addWidget(self.fetch_all_btn)
+        left_layout.addWidget(self.all_stocks_btn)
+        left_layout.addWidget(self.edit_theme_btn)
         left_layout.addWidget(self.refresh_btn)
         left_layout.addWidget(QLabel("⏰ 차트 주기:"))
         left_layout.addWidget(self.timeframe_combo)
@@ -119,7 +145,7 @@ class MainWindow(QMainWindow):
 
         self.detail_container = QWidget()
         self.detail_layout = QVBoxLayout(self.detail_container)
-        placeholder = QLabel("왼쪽 목록에서 종목을 선택하세요.")
+        placeholder = QLabel("왼쪽 목록에서 종목을 선택하거나 전체 종목을 탐색하세요.")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.detail_layout.addWidget(placeholder)
 
@@ -129,6 +155,34 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.splitter)
         self.setStatusBar(QStatusBar())
+
+    # ── 전체 종목 뷰 ───────────────────────────────────────────────────────
+
+    def _on_show_all_stocks(self):
+        if self.all_stocks_df.empty:
+            self.statusBar().showMessage("마스터 데이터가 없습니다. CSV를 먼저 다운로드하세요.", 4000)
+            return
+
+        from src.ui.all_stocks_view import AllStocksView
+
+        self._clear_detail()
+        view = AllStocksView(
+            all_stocks_df=self.all_stocks_df,
+            code_to_theme=self._build_theme_map(),
+        )
+        view.stock_selected.connect(self._open_chart_from_table)
+        self.detail_layout.addWidget(view)
+
+    def _open_chart_from_table(self, code: str, name: str):
+        tf = self.timeframe_combo.currentText()
+        self._clear_detail()
+        self.detail_layout.addWidget(
+            DetailWindow(code, name, tf, back_callback=self._restore_all_stocks_view)
+        )
+
+    def _restore_all_stocks_view(self):
+        self._clear_detail()
+        self._on_show_all_stocks()
 
     # ── 카테고리 ───────────────────────────────────────────────────────────
 
@@ -171,22 +225,26 @@ class MainWindow(QMainWindow):
     # ── 종목 선택 ──────────────────────────────────────────────────────────
 
     def _on_stock_clicked(self, item):
-        text   = item.text()                              # "[KR] 삼성전자 (005930)"
-        code   = text.split("(")[-1].rstrip(")")
-        name   = text.split("] ", 1)[-1].rsplit("(", 1)[0].strip()
-        tf     = self.timeframe_combo.currentText()
+        text = item.text()                          # "[KR] 삼성전자 (005930)"
+        code = text.split("(")[-1].rstrip(")")
+        name = text.split("] ", 1)[-1].rsplit("(", 1)[0].strip()
+        tf   = self.timeframe_combo.currentText()
 
-        for i in reversed(range(self.detail_layout.count())):
-            w = self.detail_layout.itemAt(i).widget()
-            if w:
-                w.deleteLater()
-
+        self._clear_detail()
         self.detail_layout.addWidget(DetailWindow(code, name, tf))
 
     def _refresh_current_chart(self):
         current = self.stock_list.currentItem()
         if current:
             self._on_stock_clicked(current)
+
+    def _clear_detail(self):
+        for i in reversed(range(self.detail_layout.count())):
+            w = self.detail_layout.itemAt(i).widget()
+            if w:
+                if hasattr(w, "stop_loading"):
+                    w.stop_loading()
+                w.deleteLater()
 
     # ── 종목 추가 ──────────────────────────────────────────────────────────
 
@@ -216,6 +274,13 @@ class MainWindow(QMainWindow):
             self._on_category_changed()
         except Exception as e:
             QMessageBox.warning(self, "오류", f"종목 추가 실패: {e}")
+
+    # ── 테마 편집 ──────────────────────────────────────────────────────────
+
+    def _open_category_editor(self):
+        dlg = CategoryEditDialog(parent=self)
+        dlg.themes_updated.connect(self._on_refresh_categories)
+        dlg.exec()
 
     # ── CSV 다운로드 ───────────────────────────────────────────────────────
 

@@ -40,8 +40,10 @@ ins-stock-advisor/
 │   │   ├── us_watchlist.json     # US 관심 종목 목록
 │   │   └── sector_rules.json     # 섹터 → 카테고리 매핑 규칙
 │   └── ui/
-│       ├── main_window.py        # 메인 UI (QThread 백그라운드 로딩)
+│       ├── loading_window.py     # 초기화 로딩 화면 (SetupThread)
+│       ├── main_window.py        # 메인 UI
 │       ├── detail_window.py      # 종목 차트 (KR/US 분기)
+│       ├── all_stocks_view.py    # 전체 종목 테이블 뷰 (페이지네이션)
 │       └── components/
 │           └── chart_view.py
 └── docs/                         # 요구사항 문서
@@ -58,13 +60,15 @@ ins-stock-advisor/
   │
   ├─ 2. KIS MST → all_stocks.csv (없을 때만)
   │
-  ├─ 3. CategoryLoaderThread (백그라운드)
+  ├─ 3. LoadingWindow (SetupThread 백그라운드)
   │       ├─ 캐시 유효 (24h) → category_cache.json 즉시 로드
   │       └─ 캐시 만료 → rebuild
   │               ├─ KR: category_map.json 로드
-  │               └─ US: us_watchlist.json + AV OVERVIEW (SQLite 캐시 우선)
+  │               └─ US: sector_rules.json known 우선, 미지정 종목만 AV OVERVIEW 호출
   │
-  └─ 4. 카테고리 드롭다운 표시
+  └─ 4. MainWindow 표시 (로딩 화면 닫힘)
+         ├─ 좌측: 카테고리 드롭다운 + 종목 목록
+         └─ 우측: 차트 뷰 or 전체 종목 테이블 뷰 (토글)
 ```
 
 ---
