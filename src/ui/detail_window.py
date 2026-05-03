@@ -1,30 +1,29 @@
 import pandas as pd
 from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from src.api.kis_api import KISApi
 from src.core.scanner import StockScanner
-from src.ui.components.chart_view import StockChart
+from src.utils.logger import logger
+
+
+def _is_us(symbol: str) -> bool:
+    return not symbol.strip().isdigit()
 
 
 class DetailWindow(QWidget):
-    # 생성자에 stock_name 파라미터 추가
-    def __init__(self, symbol, stock_name, timeframe_text="일봉", parent=None):
+    def __init__(self, symbol: str, stock_name: str, timeframe_text: str = "일봉", parent=None):
         super().__init__(parent)
-        self.symbol = symbol
-        self.stock_name = stock_name
+        self.symbol        = symbol
+        self.stock_name    = stock_name
         self.timeframe_text = timeframe_text
-        self.api = KISApi()
-        self.scanner = StockScanner()
-        self.init_ui()
-        self.load_data()
+        self.scanner       = StockScanner()
+        self._init_ui()
+        self._load_data()
 
-    def init_ui(self):
+    def _init_ui(self):
+        from src.ui.components.chart_view import StockChart
         layout = QVBoxLayout(self)
 
-        # "종목명(코드)" 형식으로 로딩 텍스트 표시
-        self.info_label = QLabel(
-            f"[{self.stock_name}({self.symbol})] 데이터 분석 중... ({self.timeframe_text})"
-        )
+        self.info_label = QLabel(f"[{self.stock_name}({self.symbol})] 데이터 분석 중... ({self.timeframe_text})")
         self.info_label.setStyleSheet(
             "font-size: 18px; font-weight: bold; color: #4a90e2; padding: 5px;"
         )
@@ -33,107 +32,108 @@ class DetailWindow(QWidget):
         self.chart = StockChart()
         layout.addWidget(self.chart)
 
-    def load_data(self):
-        # 1. 주기 매핑
+    def _load_data(self):
         tf_map = {"일봉": "D", "주봉": "W", "월봉": "M", "3분봉": "3m"}
         api_tf = tf_map.get(self.timeframe_text, "D")
 
-        raw_ohlcv = self.api.fetch_ohlcv(self.symbol, timeframe=api_tf)
-        if not raw_ohlcv:
-            self.info_label.setText(f"{self.symbol} - 데이터 수집 실패")
+        if _is_us(self.symbol):
+            df = self._load_us(api_tf)
+        else:
+            df = self._load_kr(api_tf)
+
+        if df is None or df.empty:
             return
 
-        # 2. 데이터프레임 처리
-        df = pd.DataFrame(raw_ohlcv)
+        if len(df) < 20:
+            self.info_label.setText(
+                f"{self.symbol} - 데이터 부족 (최소 20개 필요, 현재 {len(df)}개)"
+            )
+            return
+
+        try:
+            df = self.scanner.calculate_bollinger_bands(df)
+            self.chart.update_chart(df)
+        except Exception as e:
+            self.info_label.setText(f"[{self.symbol}] 차트 계산 에러: {e}")
+            return
+
+        price    = df.iloc[-1]["close"]
+        currency = "USD" if _is_us(self.symbol) else "원"
+        fmt      = f"{price:,.2f}" if _is_us(self.symbol) else f"{int(price):,}"
+        self.info_label.setText(
+            f"{self.stock_name}({self.symbol}) | 현재가: {fmt}{currency} | {self.timeframe_text}"
+        )
+
+    # ── KR ────────────────────────────────────────────────────────────────
+
+    def _load_kr(self, api_tf: str) -> pd.DataFrame | None:
+        from src.api.kis_api import KISApi
+        api = KISApi()
+        raw = api.fetch_ohlcv(self.symbol, timeframe=api_tf)
+        if not raw:
+            self.info_label.setText(f"{self.symbol} - 데이터 수집 실패")
+            return None
+
+        df = pd.DataFrame(raw)
+
         if api_tf == "3m":
-            column_map = {
-                "stck_bsop_date": "date",
-                "stck_cntg_hour": "time",
-                "stck_prpr": "close",
-                "stck_oprc": "open",
-                "stck_hgpr": "high",
-                "stck_lwpr": "low",
+            col_map = {
+                "stck_bsop_date": "date", "stck_cntg_hour": "time",
+                "stck_prpr": "close", "stck_oprc": "open",
+                "stck_hgpr": "high",  "stck_lwpr": "low",
                 "cntg_vol": "volume",
             }
         else:
-            column_map = {
+            col_map = {
                 "stck_bsop_date": "date",
-                "stck_clpr": "close",
-                "stck_oprc": "open",
-                "stck_hgpr": "high",
-                "stck_lwpr": "low",
+                "stck_clpr": "close", "stck_oprc": "open",
+                "stck_hgpr": "high",  "stck_lwpr": "low",
                 "acml_vol": "volume",
             }
 
-        existing_cols = [k for k in column_map.keys() if k in df.columns]
-        df = df[existing_cols].rename(columns=column_map)
+        existing = {k: v for k, v in col_map.items() if k in df.columns}
+        df = df[list(existing.keys())].rename(columns=existing)
 
-        # 타입 변환 및 과거 날짜가 위로 오도록 정렬
-        numeric_cols = ["close", "open", "high", "low", "volume"]
-        for col in numeric_cols:
+        for col in ["close", "open", "high", "low", "volume"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+
         df = df.iloc[::-1].reset_index(drop=True)
 
-        # --- ✨ 핵심: 1분봉 데이터를 3분봉으로 리샘플링(Resampling) ---
+        # 1분봉 → 3분봉 리샘플링
         if api_tf == "3m" and "time" in df.columns:
             try:
-                # 1. 날짜와 시간을 합쳐서 진짜 시간(Datetime) 인덱스로 만들기
                 df["datetime"] = pd.to_datetime(
                     df["date"].astype(str) + df["time"].astype(str).str.zfill(6),
                     format="%Y%m%d%H%M%S",
                 )
                 df.set_index("datetime", inplace=True)
-
-                # 2. 3분 단위('3min')로 그룹화하여 시가, 고가, 저가, 종가, 거래량 재계산
                 df = (
                     df.resample("3min")
-                    .agg(
-                        {
-                            "date": "last",
-                            "time": "last",
-                            "open": "first",
-                            "high": "max",
-                            "low": "min",
-                            "close": "last",
-                            "volume": "sum",
-                        }
-                    )
+                    .agg({"date": "last", "time": "last",
+                          "open": "first", "high": "max",
+                          "low": "min",   "close": "last",
+                          "volume": "sum"})
                     .dropna()
                     .reset_index(drop=True)
                 )
             except Exception as e:
                 self.info_label.setText(f"3분봉 변환 에러: {e}")
-                return
-        # -------------------------------------------------------------
+                return None
 
-        # 볼린저 밴드를 그리기 위해선 최소 20개의 데이터(캔들)가 필요함
-        if len(df) < 20:
-            self.info_label.setText(
-                f"{self.symbol} - 데이터 부족 (최소 20개 캔들 필요, 현재 {len(df)}개)"
-            )
-            return
+        return df
 
-        # 3. 지표 계산 및 차트 업데이트
-        try:
-            df = self.scanner.calculate_bollinger_bands(df)
-            self.chart.update_chart(df)
-        except Exception as e:
-            self.info_label.setText(f"[{self.symbol}] 차트 지표 계산 에러: {e}")
-            return
+    # ── US ────────────────────────────────────────────────────────────────
 
-        # 4. 상단 종목명 및 현재가 업데이트 부분 수정
-        fund = self.api.fetch_stock_fundamental(self.symbol)
-        price = 0
+    def _load_us(self, api_tf: str) -> pd.DataFrame | None:
+        from src.api.alphavantage_api import AlphaVantageApi
+        av = AlphaVantageApi()
+        records = av.fetch_ohlcv(self.symbol, api_tf)
+        if not records:
+            self.info_label.setText(f"{self.symbol} - AlphaVantage 데이터 없음 (API 한도 확인)")
+            return None
 
-        if fund:
-            raw_price = fund.get("stck_prpr", 0)
-            try:
-                price = int(raw_price) if raw_price else 0
-            except (ValueError, TypeError):
-                price = 0
-
-        # API 응답 이름 대신 UI에서 넘겨받은 깔끔한 종목명 사용, "종목명(코드)" 포맷 적용
-        self.info_label.setText(
-            f"{self.stock_name}({self.symbol}) | 현재가: {price:,}원 | {self.timeframe_text}"
-        )
+        df = pd.DataFrame(records)
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df.reset_index(drop=True)

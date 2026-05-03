@@ -1,8 +1,7 @@
-import json
 from pathlib import Path
 
 import pandas as pd
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -19,40 +18,59 @@ from PyQt6.QtWidgets import (
 )
 
 from src.api.kis_api import KISApi
+from src.core import categorizer
 from src.ui.detail_window import DetailWindow
 from src.utils.logger import logger
 
 
+class RefreshThread(QThread):
+    """카테고리 새로고침 전용 스레드 (강제 재빌드)"""
+    loaded = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.finished.connect(self.deleteLater)
+
+    def run(self):
+        try:
+            cats = categorizer.load_categories(
+                force_rebuild=True,
+                progress_cb=lambda msg: logger.info(msg),
+            )
+            self.loaded.emit(cats)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, initial_categories: dict):
         super().__init__()
         self.api = KISApi()
-        self.categories = {}
-        self.stock_name_map = {}
-        self.load_stock_master()
-        self.init_ui()
-        self.load_categories()
+        self.categories: dict[str, list] = initial_categories
+        self.stock_name_map: dict[str, str] = {}
+        self._refresh_thread: RefreshThread | None = None
 
-    def load_stock_master(self):
-        """저장된 전종목 CSV가 있다면 로드, 없으면 최초 1회 다운로드"""
-        user_data_dir = Path.home() / ".inz_stock_advisor" / "data"
-        csv_path = user_data_dir / "all_stocks.csv"
+        self._load_stock_master()
+        self._init_ui()
+        self._populate_categories(initial_categories)
 
-        # 프로그램 처음 시작 시 파일이 없으면 자동 다운로드
-        if not csv_path.exists():
-            logger.info("마스터 데이터가 없습니다. 최초 종목 다운로드를 진행합니다...")
-            self.api.download_all_symbols_to_csv()
+    # ── 마스터 데이터 ──────────────────────────────────────────────────────
 
+    def _load_stock_master(self):
+        csv_path = Path.home() / ".inz_stock_advisor" / "data" / "all_stocks.csv"
         try:
             if csv_path.exists():
                 df = pd.read_csv(csv_path, dtype={"종목코드": str})
                 self.stock_name_map = dict(zip(df["종목코드"], df["종목명"]))
-                logger.info(f"마스터 데이터 로드 완료: {csv_path}")
+                logger.info(f"마스터 데이터 로드: {len(self.stock_name_map):,}개")
         except Exception as e:
             logger.error(f"마스터 데이터 로드 실패: {e}")
 
-    def init_ui(self):
-        self.setWindowTitle("Inz-Stock-Advisor v1.2")
+    # ── UI 초기화 ──────────────────────────────────────────────────────────
+
+    def _init_ui(self):
+        self.setWindowTitle("Inz-Stock-Advisor v2.0")
         self.resize(1400, 900)
 
         main_widget = QWidget()
@@ -65,25 +83,32 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
 
         self.fetch_all_btn = QPushButton("📂 전종목 리스트 추출 (CSV)")
-        self.fetch_all_btn.clicked.connect(self.on_download_csv)
+        self.fetch_all_btn.clicked.connect(self._on_download_csv)
         self.fetch_all_btn.setStyleSheet(
-            "height: 45px; font-weight: bold; background-color: #34495e; color: white;"
+            "height: 40px; font-weight: bold; background-color: #34495e; color: white;"
+        )
+
+        self.refresh_btn = QPushButton("🔄 카테고리 새로고침")
+        self.refresh_btn.clicked.connect(self._on_refresh_categories)
+        self.refresh_btn.setStyleSheet(
+            "height: 34px; background-color: #2c3e50; color: #aaa;"
         )
 
         self.timeframe_combo = QComboBox()
         self.timeframe_combo.addItems(["일봉", "3분봉", "주봉", "월봉"])
-        self.timeframe_combo.currentIndexChanged.connect(self.refresh_current_chart)
+        self.timeframe_combo.currentIndexChanged.connect(self._refresh_current_chart)
 
         self.category_combo = QComboBox()
-        self.category_combo.currentIndexChanged.connect(self.on_category_changed)
+        self.category_combo.currentIndexChanged.connect(self._on_category_changed)
 
         self.stock_list = QListWidget()
-        self.stock_list.itemClicked.connect(self.on_stock_clicked)
+        self.stock_list.itemClicked.connect(self._on_stock_clicked)
 
-        self.add_stock_btn = QPushButton("+ 종목 추가 (코드)")
-        self.add_stock_btn.clicked.connect(self.add_custom_stock)
+        self.add_stock_btn = QPushButton("+ 종목 추가")
+        self.add_stock_btn.clicked.connect(self._add_custom_stock)
 
         left_layout.addWidget(self.fetch_all_btn)
+        left_layout.addWidget(self.refresh_btn)
         left_layout.addWidget(QLabel("⏰ 차트 주기:"))
         left_layout.addWidget(self.timeframe_combo)
         left_layout.addWidget(QLabel("📂 카테고리:"))
@@ -94,9 +119,9 @@ class MainWindow(QMainWindow):
 
         self.detail_container = QWidget()
         self.detail_layout = QVBoxLayout(self.detail_container)
-        self.placeholder = QLabel("왼쪽 목록에서 종목을 선택하세요.")
-        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.detail_layout.addWidget(self.placeholder)
+        placeholder = QLabel("왼쪽 목록에서 종목을 선택하세요.")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.detail_layout.addWidget(placeholder)
 
         self.splitter.addWidget(left_panel)
         self.splitter.addWidget(self.detail_container)
@@ -105,85 +130,100 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.splitter)
         self.setStatusBar(QStatusBar())
 
-    def load_categories(self):
-        try:
-            with open("src/data/category_map.json", "r", encoding="utf-8") as f:
-                self.categories = json.load(f)
-                self.category_combo.clear()
-                self.category_combo.addItems(self.categories.keys())
-        except Exception as e:
-            logger.error(f"카테고리 로드 실패: {e}")
+    # ── 카테고리 ───────────────────────────────────────────────────────────
 
-    def on_category_changed(self):
+    def _populate_categories(self, cats: dict):
+        self.categories = cats
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItems(cats.keys())
+        self.category_combo.blockSignals(False)
+        self._on_category_changed()
+
+    def _on_category_changed(self):
         category = self.category_combo.currentText()
         self.stock_list.clear()
-        if category in self.categories:
-            for code in self.categories[category]:
-                # 맵에 이름이 없으면 기본적으로 "알 수 없음" 으로 표시
-                name = self.stock_name_map.get(code, "알 수 없음")
-                self.stock_list.addItem(f"{name} ({code})")
+        for entry in self.categories.get(category, []):
+            code   = entry["code"]
+            market = entry.get("market", "KR")
+            name   = self.stock_name_map.get(code) or entry.get("name") or code
+            self.stock_list.addItem(f"[{market}] {name} ({code})")
 
-    def on_download_csv(self):
-        self.statusBar().showMessage("전체 종목 수집 중...")
-        file_name = self.api.download_all_symbols_to_csv()
-        if file_name:
-            QMessageBox.information(
-                self, "완료", f"전종목 리스트가 저장되었습니다:\n{file_name}"
-            )
-            # CSV 다운로드 완료 시 즉시 마스터 데이터를 다시 읽고 리스트를 새로고침
-            self.load_stock_master()
-            self.on_category_changed()
-        self.statusBar().showMessage("준비 완료")
+    def _on_refresh_categories(self):
+        if self._refresh_thread and self._refresh_thread.isRunning():
+            return
+        self.refresh_btn.setEnabled(False)
+        self.statusBar().showMessage("카테고리 재빌드 중...")
+        self._refresh_thread = RefreshThread(parent=self)
+        self._refresh_thread.loaded.connect(self._on_refresh_done)
+        self._refresh_thread.failed.connect(self._on_refresh_failed)
+        self._refresh_thread.start()
 
-    def on_stock_clicked(self, item):
-        display_text = item.text()  # 예: 삼성전자 (005930)
+    def _on_refresh_done(self, cats: dict):
+        self._populate_categories(cats)
+        self.refresh_btn.setEnabled(True)
+        self.statusBar().showMessage(f"카테고리 새로고침 완료 ({len(cats)}개)", 3000)
 
-        # 괄호 안의 코드와 괄호 밖의 종목명을 분리
-        symbol = display_text.split("(")[-1].replace(")", "").strip()
-        stock_name = display_text.rsplit("(", 1)[0].strip()
+    def _on_refresh_failed(self, msg: str):
+        self.refresh_btn.setEnabled(True)
+        self.statusBar().showMessage(f"새로고침 실패: {msg}", 5000)
 
-        timeframe_text = self.timeframe_combo.currentText()
+    # ── 종목 선택 ──────────────────────────────────────────────────────────
+
+    def _on_stock_clicked(self, item):
+        text   = item.text()                              # "[KR] 삼성전자 (005930)"
+        code   = text.split("(")[-1].rstrip(")")
+        name   = text.split("] ", 1)[-1].rsplit("(", 1)[0].strip()
+        tf     = self.timeframe_combo.currentText()
 
         for i in reversed(range(self.detail_layout.count())):
             w = self.detail_layout.itemAt(i).widget()
             if w:
                 w.deleteLater()
 
-        # DetailWindow에 종목명(stock_name)도 함께 전달
-        detail_view = DetailWindow(symbol, stock_name, timeframe_text)
-        self.detail_layout.addWidget(detail_view)
+        self.detail_layout.addWidget(DetailWindow(code, name, tf))
 
-    def refresh_current_chart(self):
-        current_item = self.stock_list.currentItem()
-        if current_item:
-            self.on_stock_clicked(current_item)
+    def _refresh_current_chart(self):
+        current = self.stock_list.currentItem()
+        if current:
+            self._on_stock_clicked(current)
 
-    def add_custom_stock(self):
+    # ── 종목 추가 ──────────────────────────────────────────────────────────
+
+    def _add_custom_stock(self):
         category = self.category_combo.currentText()
         if not category:
             return
 
         code, ok = QInputDialog.getText(
-            self, "종목 추가", "추가할 종목 코드를 입력하세요:"
+            self, "종목 추가", "종목 코드 입력 (예: 005930 또는 AAPL):"
         )
-        if ok and code:
-            if code not in self.categories.get(category, []):
-                self.categories[category].append(code)
-                try:
-                    with open("src/data/category_map.json", "w", encoding="utf-8") as f:
-                        json.dump(self.categories, f, ensure_ascii=False, indent=2)
-                    self.on_category_changed()
-                except Exception as e:
-                    logger.error(f"카테고리 파일 저장 중 에러 발생: {e}")
-            else:
-                QMessageBox.warning(self, "경고", "이미 추가된 종목입니다.")
-            if code not in self.categories.get(category, []):
-                self.categories[category].append(code)
-                try:
-                    with open("src/data/category_map.json", "w", encoding="utf-8") as f:
-                        json.dump(self.categories, f, ensure_ascii=False, indent=2)
-                    self.on_category_changed()
-                except Exception as e:
-                    logger.error(f"카테고리 파일 저장 중 에러 발생: {e}")
-            else:
-                QMessageBox.warning(self, "경고", "이미 추가된 종목입니다.")
+        if not ok or not code:
+            return
+
+        code   = code.strip().upper()
+        market = "US" if not code.isdigit() else "KR"
+
+        if market == "KR":
+            name = self.stock_name_map.get(code, "")
+        else:
+            from src.api.alphavantage_api import AlphaVantageApi
+            overview = AlphaVantageApi().fetch_overview(code)
+            name = overview.get("name", code) if overview else code
+
+        try:
+            self.categories = categorizer.add_stock(self.categories, category, code, name, market)
+            self._on_category_changed()
+        except Exception as e:
+            QMessageBox.warning(self, "오류", f"종목 추가 실패: {e}")
+
+    # ── CSV 다운로드 ───────────────────────────────────────────────────────
+
+    def _on_download_csv(self):
+        self.statusBar().showMessage("전체 종목 수집 중...")
+        file_name = self.api.download_all_symbols_to_csv()
+        if file_name:
+            self._load_stock_master()
+            self._on_category_changed()
+            QMessageBox.information(self, "완료", f"전종목 리스트 저장:\n{file_name}")
+        self.statusBar().showMessage("준비 완료", 3000)

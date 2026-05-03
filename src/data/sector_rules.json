@@ -1,0 +1,41 @@
+{
+  "us_known_sectors": {
+    "NVDA":  {"name": "NVIDIA Corp",                 "sector": "Technology"},
+    "AMD":   {"name": "Advanced Micro Devices",      "sector": "Technology"},
+    "INTC":  {"name": "Intel Corporation",           "sector": "Technology"},
+    "TSM":   {"name": "Taiwan Semiconductor Mfg",   "sector": "Technology"},
+    "ASML":  {"name": "ASML Holding NV",             "sector": "Technology"},
+    "AAPL":  {"name": "Apple Inc",                   "sector": "Technology"},
+    "MSFT":  {"name": "Microsoft Corporation",       "sector": "Technology"},
+    "GOOGL": {"name": "Alphabet Inc",                "sector": "Communication Services"},
+    "META":  {"name": "Meta Platforms Inc",          "sector": "Communication Services"},
+    "AMZN":  {"name": "Amazon.com Inc",              "sector": "Consumer Discretionary"},
+    "TSLA":  {"name": "Tesla Inc",                   "sector": "Consumer Discretionary"},
+    "PLTR":  {"name": "Palantir Technologies",       "sector": "Technology"},
+    "SMCI":  {"name": "Super Micro Computer",        "sector": "Technology"}
+  },
+  "KR_keywords": {
+    "반도체": ["반도체", "실리콘", "웨이퍼", "파운드리", "메모리", "낸드", "디램"],
+    "이차전지": ["배터리", "이차전지", "전지", "양극재", "음극재", "전해질", "분리막"],
+    "바이오": ["바이오", "제약", "헬스케어", "의약품", "셀", "팜", "메디"],
+    "로봇": ["로봇", "자동화", "로보"],
+    "우주항공": ["항공", "우주", "위성", "드론"],
+    "방산": ["방산", "방위", "군수", "탄약", "레이더"],
+    "건설": ["건설", "건축", "엔지니어링", "시멘트", "레미콘"],
+    "원전": ["원전", "원자력", "핵연료"],
+    "금융": ["금융", "은행", "증권", "보험", "캐피탈", "카드", "저축"]
+  },
+  "US": {
+    "Technology": "기술/AI",
+    "Health Care": "바이오/헬스케어",
+    "Energy": "에너지",
+    "Financials": "금융",
+    "Consumer Discretionary": "소비재",
+    "Industrials": "산업재",
+    "Communication Services": "커뮤니케이션",
+    "Consumer Staples": "필수소비재",
+    "Materials": "소재",
+    "Real Estate": "부동산",
+    "Utilities": "유틸리티"
+  }
+}
