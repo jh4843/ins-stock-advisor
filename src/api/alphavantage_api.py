@@ -20,14 +20,21 @@ class AlphaVantageApi:
 
     # ── OHLCV ──────────────────────────────────────────────────────────────
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "D") -> list[dict]:
+    def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str = "D",
+        start_date=None,
+        end_date=None,
+    ) -> list[dict]:
         """
         Returns list of dicts (oldest first):
             {date, time, open, high, low, close, volume}
         timeframe: "3m" | "D" | "W" | "M"
         """
+        outputsize = "full" if start_date or end_date else "compact"
         if timeframe == "3m":
-            return self._fetch_intraday(symbol)
+            return self._fetch_intraday(symbol, outputsize=outputsize)
         if timeframe == "W":
             return self._fetch_adjusted_series(
                 symbol,
@@ -35,6 +42,7 @@ class AlphaVantageApi:
                 function="TIME_SERIES_WEEKLY_ADJUSTED",
                 series_key="Weekly Adjusted Time Series",
                 ttl_minutes=self.TTL_WEEKLY,
+                outputsize=outputsize,
             )
         if timeframe == "M":
             return self._fetch_adjusted_series(
@@ -43,21 +51,23 @@ class AlphaVantageApi:
                 function="TIME_SERIES_MONTHLY_ADJUSTED",
                 series_key="Monthly Adjusted Time Series",
                 ttl_minutes=self.TTL_MONTHLY,
+                outputsize=outputsize,
             )
-        return self._fetch_daily(symbol)
+        return self._fetch_daily(symbol, outputsize=outputsize)
 
-    def _fetch_intraday(self, symbol: str) -> list[dict]:
-        cached = self.cache.get_ohlcv(symbol, "3min", self.TTL_INTRADAY)
+    def _fetch_intraday(self, symbol: str, outputsize: str = "compact") -> list[dict]:
+        interval = "3min_full" if outputsize == "full" else "3min"
+        cached = self.cache.get_ohlcv(symbol, interval, self.TTL_INTRADAY)
         if cached:
-            logger.debug(f"[AV:{symbol}] 캐시 히트 (3min)")
+            logger.debug(f"[AV:{symbol}] 캐시 히트 ({interval})")
             return cached
 
-        logger.info(f"[AV:{symbol}] API 호출 (intraday 3min)")
+        logger.info(f"[AV:{symbol}] API 호출 (intraday {interval})")
         data = self._get({
             "function": "TIME_SERIES_INTRADAY",
             "symbol": symbol,
             "interval": "3min",
-            "outputsize": "compact",
+            "outputsize": outputsize,
             "adjusted": "true",
         })
         if not data:
@@ -66,16 +76,17 @@ class AlphaVantageApi:
         ts = data.get("Time Series (3min)", {})
         records = self._parse_ts(ts, intraday=True)
         if records:
-            self.cache.set_ohlcv(symbol, "3min", records)
+            self.cache.set_ohlcv(symbol, interval, records)
         return records
 
-    def _fetch_daily(self, symbol: str) -> list[dict]:
+    def _fetch_daily(self, symbol: str, outputsize: str = "compact") -> list[dict]:
         return self._fetch_adjusted_series(
             symbol,
             interval="daily",
             function="TIME_SERIES_DAILY_ADJUSTED",
             series_key="Time Series (Daily)",
             ttl_minutes=self.TTL_DAILY,
+            outputsize=outputsize,
         )
 
     def _fetch_adjusted_series(
@@ -85,17 +96,19 @@ class AlphaVantageApi:
         function: str,
         series_key: str,
         ttl_minutes: int,
+        outputsize: str = "compact",
     ) -> list[dict]:
-        cached = self.cache.get_ohlcv(symbol, interval, ttl_minutes)
+        cache_interval = f"{interval}_full" if outputsize == "full" else interval
+        cached = self.cache.get_ohlcv(symbol, cache_interval, ttl_minutes)
         if cached:
-            logger.debug(f"[AV:{symbol}] 캐시 히트 ({interval})")
+            logger.debug(f"[AV:{symbol}] 캐시 히트 ({cache_interval})")
             return cached
 
-        logger.info(f"[AV:{symbol}] API 호출 ({interval})")
+        logger.info(f"[AV:{symbol}] API 호출 ({cache_interval})")
         data = self._get({
             "function": function,
             "symbol": symbol,
-            "outputsize": "compact",
+            "outputsize": outputsize,
         })
         if not data:
             return []
@@ -103,7 +116,7 @@ class AlphaVantageApi:
         ts = data.get(series_key, {})
         records = self._parse_ts(ts, intraday=False)
         if records:
-            self.cache.set_ohlcv(symbol, interval, records)
+            self.cache.set_ohlcv(symbol, cache_interval, records)
         return records
 
     # ── Overview (카테고리 분류용) ──────────────────────────────────────────

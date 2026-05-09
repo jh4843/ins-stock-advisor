@@ -7,6 +7,7 @@ from src.api.auth_manager import AuthManager
 from src.ui.loading_window import LoadingWindow
 from src.ui.main_window import MainWindow
 from src.utils.logger import logger
+from src.utils.paths import resource_path
 
 _main_window: MainWindow | None = None
 
@@ -22,7 +23,7 @@ def main():
     app = QApplication(sys.argv)
 
     try:
-        with open("src/ui/styles.qss", "r", encoding="utf-8") as f:
+        with open(resource_path("src", "ui", "styles.qss"), "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
     except FileNotFoundError:
         logger.warning("스타일시트 없음 — 기본 테마로 실행")

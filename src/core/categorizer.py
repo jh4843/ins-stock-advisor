@@ -7,20 +7,30 @@ from pathlib import Path
 import pandas as pd
 
 from src.utils.logger import logger
+from src.utils.paths import ensure_user_data_file, resource_path, user_data_path
 
-CACHE_PATH = Path.home() / ".inz_stock_advisor" / "data" / "category_cache.json"
+CACHE_PATH = user_data_path("category_cache.json")
 CACHE_TTL_HOURS = 24
 
-KR_MAP_PATH  = Path("src/data/category_map.json")
-US_LIST_PATH = Path("src/data/us_watchlist.json")
-RULES_PATH   = Path("src/data/sector_rules.json")
+KR_MAP_PATH = ensure_user_data_file("category_map.json", "src/data/category_map.json")
+US_LIST_PATH = ensure_user_data_file("us_watchlist.json", "src/data/us_watchlist.json")
+RULES_PATH = resource_path("src", "data", "sector_rules.json")
 
-MULTITHEME_ASSET_PATH = Path("assets/all_stocks_multitheme.csv")
-MULTITHEME_USER_PATH  = Path.home() / ".inz_stock_advisor" / "data" / "all_stocks_multitheme.csv"
-ALL_STOCKS_CSV_PATH   = Path.home() / ".inz_stock_advisor" / "data" / "all_stocks.csv"
+MULTITHEME_ASSET_PATH = resource_path("assets", "all_stocks_multitheme.csv")
+MULTITHEME_USER_PATH = user_data_path("all_stocks_multitheme.csv")
+ALL_STOCKS_CSV_PATH = user_data_path("all_stocks.csv")
 
 # AV 무료 플랜: 분당 5회 → 12초 간격
 _AV_RATE_LIMIT_SEC = 12
+
+
+def _split_themes(theme: object) -> list[str]:
+    """CSV 테마 값을 '/' 기준으로 나누고 빈 값은 '기타'로 보정한다."""
+    if pd.isna(theme):
+        return ["기타"]
+
+    themes = [part.strip() for part in str(theme).split("/") if part.strip()]
+    return themes or ["기타"]
 
 
 def load_categories(
@@ -89,10 +99,10 @@ def sync_themes_from_multitheme(progress_cb=None) -> None:
     kr_map: dict[str, list[str]] = {}
     for code in all_df["종목코드"]:
         code = str(code).strip()
-        theme = theme_map.get(code, "기타")
-        kr_map.setdefault(theme, [])
-        if code not in kr_map[theme]:
-            kr_map[theme].append(code)
+        for theme in _split_themes(theme_map.get(code, "기타")):
+            kr_map.setdefault(theme, [])
+            if code not in kr_map[theme]:
+                kr_map[theme].append(code)
 
     # "기타"는 맨 뒤로 정렬
     ordered: dict[str, list[str]] = {k: v for k, v in sorted(kr_map.items()) if k != "기타"}

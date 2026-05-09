@@ -8,6 +8,7 @@ import requests
 from src.api.auth_manager import AuthManager
 from src.utils.config import Config
 from src.utils.logger import logger
+from src.utils.paths import user_data_dir
 
 
 class KISApi:
@@ -105,10 +106,7 @@ class KISApi:
                 df = df[df["종목코드"].str.isnumeric()]
 
                 # 사용자 홈 디렉터리 하위에 앱 폴더 생성
-                user_data_dir = Path.home() / ".inz_stock_advisor" / "data"
-                user_data_dir.mkdir(parents=True, exist_ok=True)
-
-                file_path = user_data_dir / "all_stocks.csv"
+                file_path = user_data_dir() / "all_stocks.csv"
                 df.to_csv(file_path, index=False, encoding="utf-8-sig")
 
                 logger.info(f"총 {len(df)}개 종목 마스터 데이터 저장 완료: {file_path}")
@@ -120,10 +118,16 @@ class KISApi:
             logger.error(f"마스터 파일 수집 실패: {e}")
             return None
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "D"):
+    def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str = "D",
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ):
         """주기별 시세 조회 (D:일, W:주, M:월, 3m:3분봉)"""
         try:
-            today = datetime.now()
+            today = end_date or datetime.now()
 
             if timeframe == "3m":
                 # 주식일별분봉조회 (최대 120개의 1분봉 데이터를 수집)
@@ -138,15 +142,14 @@ class KISApi:
                 tr_id = "FHKST03010230"
             else:
                 # 국내주식기간별시세 (일/주/월)
-                start_date = (today - timedelta(days=365)).strftime("%Y%m%d")
-                end_date = today.strftime("%Y%m%d")
+                start = start_date or (today - timedelta(days=365))
 
                 url = f"{Config.BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
                 params = {
                     "FID_COND_MRKT_DIV_CODE": "J",
                     "FID_INPUT_ISCD": symbol,
-                    "FID_INPUT_DATE_1": start_date,
-                    "FID_INPUT_DATE_2": end_date,
+                    "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": today.strftime("%Y%m%d"),
                     "FID_PERIOD_DIV_CODE": timeframe,
                     "FID_ORG_ADJ_PRC": "1",
                 }

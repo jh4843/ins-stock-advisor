@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
 from src.utils.logger import logger
+from src.utils.paths import user_data_path
 
 
 class SetupThread(QThread):
@@ -21,7 +22,7 @@ class SetupThread(QThread):
             from src.core import categorizer
 
             # 1. MST 마스터 파일
-            csv_path = Path.home() / ".inz_stock_advisor" / "data" / "all_stocks.csv"
+            csv_path = user_data_path("all_stocks.csv")
             if not csv_path.exists():
                 self.progress.emit("KIS 전종목 마스터 파일 다운로드 중...")
                 KISApi().download_all_symbols_to_csv()

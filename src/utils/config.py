@@ -2,7 +2,10 @@ import os
 
 from dotenv import load_dotenv
 
-load_dotenv()
+from src.utils.paths import executable_dir, resource_path
+
+load_dotenv(resource_path(".env"))
+load_dotenv(executable_dir() / ".env", override=True)
 
 
 class Config:

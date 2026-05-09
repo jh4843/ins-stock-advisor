@@ -22,6 +22,7 @@ from src.core import categorizer
 from src.ui.category_edit_dialog import CategoryEditDialog
 from src.ui.detail_window import DetailWindow
 from src.utils.logger import logger
+from src.utils.paths import user_data_path
 
 
 class RefreshThread(QThread):
@@ -60,7 +61,7 @@ class MainWindow(QMainWindow):
     # ── 마스터 데이터 ──────────────────────────────────────────────────────
 
     def _load_stock_master(self):
-        csv_path = Path.home() / ".inz_stock_advisor" / "data" / "all_stocks.csv"
+        csv_path = user_data_path("all_stocks.csv")
         try:
             if csv_path.exists():
                 df = pd.read_csv(csv_path, dtype={"종목코드": str})

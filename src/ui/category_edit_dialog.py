@@ -109,7 +109,13 @@ class CategoryEditDialog(QDialog):
             return
 
         # 테마 콤보 목록 구성 (고유 테마, "기타" 맨 뒤)
-        themes = sorted(self._df["테마"].dropna().unique().tolist())
+        themes = sorted(
+            {
+                theme
+                for value in self._df["테마"].dropna()
+                for theme in categorizer._split_themes(value)
+            }
+        )
         if "기타" in themes:
             themes.remove("기타")
             themes.append("기타")

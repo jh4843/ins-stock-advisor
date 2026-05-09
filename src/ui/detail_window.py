@@ -1,7 +1,8 @@
 from typing import Callable
+from datetime import datetime, timedelta
 
 import pandas as pd
-from PyQt6.QtCore import QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QThread, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFormLayout,
@@ -192,6 +193,14 @@ class DetailWindow(QWidget):
         self.timeframe_text = timeframe_text
         self._back_callback = back_callback
         self.scanner        = StockScanner()
+        self._loaded_start: datetime | None = None
+        self._loaded_end: datetime | None = None
+        self._pending_visible_range: tuple[datetime, datetime, datetime, datetime] | None = None
+        self._is_reloading_range = False
+        self._suppress_range_reload = False
+        self._range_reload_timer = QTimer(self)
+        self._range_reload_timer.setSingleShot(True)
+        self._range_reload_timer.timeout.connect(self._reload_for_visible_range)
         self._init_ui()
         self._load_data()
 
@@ -230,20 +239,26 @@ class DetailWindow(QWidget):
 
         self.chart = StockChart()
         self.chart.set_currency("USD" if _is_us(self.symbol) else "원")
+        self.chart.visibleRangeChanged.connect(self._on_chart_visible_range_changed)
         layout.addWidget(self.chart)
 
     def _open_info_dialog(self):
         dlg = StockInfoDialog(self.symbol, self.stock_name, parent=self)
         dlg.show()
 
-    def _load_data(self):
+    def _load_data(
+        self,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        restore_range: tuple[datetime, datetime] | None = None,
+    ):
         tf_map = {"일봉": "D", "주봉": "W", "월봉": "M", "3분봉": "3m"}
         api_tf = tf_map.get(self.timeframe_text, "D")
 
         if _is_us(self.symbol):
-            df = self._load_us(api_tf)
+            df = self._load_us(api_tf, start_date=start_date, end_date=end_date)
         else:
-            df = self._load_kr(api_tf)
+            df = self._load_kr(api_tf, start_date=start_date, end_date=end_date)
 
         if df is None or df.empty:
             return
@@ -256,8 +271,19 @@ class DetailWindow(QWidget):
 
         try:
             df = self.scanner.calculate_bollinger_bands(df)
+            self._remember_loaded_range(df)
+            self._suppress_range_reload = True
             self.chart.update_chart(df)
+            if restore_range:
+                self.chart.setXRange(
+                    restore_range[0].timestamp(),
+                    restore_range[1].timestamp(),
+                    padding=0,
+                )
+                self.chart._refresh_visible_range()
+            self._suppress_range_reload = False
         except Exception as e:
+            self._suppress_range_reload = False
             self.info_label.setText(f"[{self.symbol}] 차트 계산 에러: {e}")
             return
 
@@ -268,12 +294,82 @@ class DetailWindow(QWidget):
             f"{self.stock_name}({self.symbol}) | 현재가: {fmt}{currency} | {self.timeframe_text}"
         )
 
+    def _remember_loaded_range(self, df: pd.DataFrame):
+        dt = self._datetime_series(df)
+        if dt.empty:
+            self._loaded_start = None
+            self._loaded_end = None
+            return
+        self._loaded_start = dt.min().to_pydatetime()
+        self._loaded_end = dt.max().to_pydatetime()
+
+    def _datetime_series(self, df: pd.DataFrame) -> pd.Series:
+        if "datetime" in df.columns:
+            return pd.to_datetime(df["datetime"], errors="coerce").dropna()
+        if "time" in df.columns:
+            return pd.to_datetime(
+                df["date"].astype(str) + df["time"].astype(str).str.zfill(6),
+                format="%Y%m%d%H%M%S",
+                errors="coerce",
+            ).dropna()
+        return pd.to_datetime(df["date"].astype(str), errors="coerce").dropna()
+
+    def _on_chart_visible_range_changed(self, start: datetime, end: datetime):
+        if self._suppress_range_reload or self._is_reloading_range:
+            return
+        if self.timeframe_text == "3분봉":
+            return
+        if self._loaded_start is None or self._loaded_end is None:
+            return
+
+        span = max(end - start, timedelta(days=1))
+        margin = span * 0.10
+        needs_reload = start < self._loaded_start + margin or end > self._loaded_end - margin
+        if not needs_reload:
+            return
+
+        fetch_start = min(start, self._loaded_start) - timedelta(days=60)
+        fetch_end = max(end, self._loaded_end)
+        fetch_end = min(fetch_end, datetime.now())
+        self._pending_visible_range = (fetch_start, fetch_end, start, end)
+        self._range_reload_timer.start(350)
+
+    def _reload_for_visible_range(self):
+        if not self._pending_visible_range or self._is_reloading_range:
+            return
+
+        fetch_start, fetch_end, restore_start, restore_end = self._pending_visible_range
+        self._pending_visible_range = None
+        self._is_reloading_range = True
+        self.info_label.setText(
+            f"{self.stock_name}({self.symbol}) | 차트 범위 재조회 중... "
+            f"{fetch_start:%Y-%m-%d} ~ {fetch_end:%Y-%m-%d}"
+        )
+        try:
+            self._load_data(
+                start_date=fetch_start,
+                end_date=fetch_end,
+                restore_range=(restore_start, restore_end),
+            )
+        finally:
+            self._is_reloading_range = False
+
     # ── KR ────────────────────────────────────────────────────────────────
 
-    def _load_kr(self, api_tf: str) -> pd.DataFrame | None:
+    def _load_kr(
+        self,
+        api_tf: str,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ) -> pd.DataFrame | None:
         from src.api.kis_api import KISApi
         api = KISApi()
-        raw = api.fetch_ohlcv(self.symbol, timeframe=api_tf)
+        raw = api.fetch_ohlcv(
+            self.symbol,
+            timeframe=api_tf,
+            start_date=start_date,
+            end_date=end_date,
+        )
         if not raw:
             self.info_label.setText(f"{self.symbol} - 데이터 수집 실패")
             return None
@@ -318,7 +414,7 @@ class DetailWindow(QWidget):
                           "low": "min",   "close": "last",
                           "volume": "sum"})
                     .dropna()
-                    .reset_index(drop=True)
+                    .reset_index()
                 )
             except Exception as e:
                 self.info_label.setText(f"3분봉 변환 에러: {e}")
@@ -328,15 +424,33 @@ class DetailWindow(QWidget):
 
     # ── US ────────────────────────────────────────────────────────────────
 
-    def _load_us(self, api_tf: str) -> pd.DataFrame | None:
+    def _load_us(
+        self,
+        api_tf: str,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+    ) -> pd.DataFrame | None:
         from src.api.alphavantage_api import AlphaVantageApi
         av = AlphaVantageApi()
-        records = av.fetch_ohlcv(self.symbol, api_tf)
+        records = av.fetch_ohlcv(
+            self.symbol,
+            api_tf,
+            start_date=start_date,
+            end_date=end_date,
+        )
         if not records:
             self.info_label.setText(f"{self.symbol} - AlphaVantage 데이터 없음 (API 한도 확인)")
             return None
 
         df = pd.DataFrame(records)
+        if start_date or end_date:
+            dt = self._datetime_series(df)
+            mask = pd.Series(True, index=dt.index)
+            if start_date:
+                mask &= dt >= start_date
+            if end_date:
+                mask &= dt <= end_date
+            df = df.loc[mask[mask].index]
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         return df.reset_index(drop=True)

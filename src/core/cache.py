@@ -4,11 +4,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.utils.logger import logger
+from src.utils.paths import user_data_dir
 
 
 class Cache:
     def __init__(self):
-        db_dir = Path.home() / ".inz_stock_advisor" / "data"
+        db_dir = user_data_dir()
         db_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = db_dir / "av_cache.db"
         self._init_db()

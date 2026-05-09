@@ -19,6 +19,9 @@ from src.utils.logger import logger
 
 PAGE_SIZE = 20
 
+# 실행 중인 스레드를 모듈 레벨에서 보관 — 위젯 소멸 후에도 GC 방지
+_running_threads: set["PriceLoaderThread"] = set()
+
 # prdy_vrss_sign → (표시 텍스트, 16진 색상)
 SIGN_MAP = {
     "1": ("▲▲", "#ff4444"),  # 상한
@@ -35,8 +38,11 @@ class PriceLoaderThread(QThread):
     price_loaded = pyqtSignal(str, str, str)  # code, price_str, sign
 
     def __init__(self, codes: list[str]):
-        super().__init__()          # parent 없음 - 수명을 AllStocksView가 직접 관리
+        super().__init__()
         self.codes = codes
+        # 모듈 레벨 집합에 등록 → 위젯 소멸 후에도 실행 중 GC 방지
+        _running_threads.add(self)
+        self.finished.connect(lambda: _running_threads.discard(self))
 
     def run(self):
         from src.api.kis_api import KISApi
@@ -79,7 +85,6 @@ class AllStocksView(QWidget):
         self._current_page = 0
         self._code_row_map: dict[str, int] = {}   # code → 현재 페이지 행 인덱스
         self._price_thread: PriceLoaderThread | None = None
-        self._retired_threads: list[PriceLoaderThread] = []
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(300)
@@ -177,9 +182,8 @@ class AllStocksView(QWidget):
     # ── 렌더링 ────────────────────────────────────────────────────────────
 
     def _render_page(self):
-        # 이전 가격 조회 스레드 중단
-        if self._price_thread and self._price_thread.isRunning():
-            self._retire_thread(self._price_thread)
+        # 이전 스레드 중단 — 시그널만 해제하고 참조는 _running_threads가 유지
+        self._stop_price_thread()
 
         offset   = self._current_page * PAGE_SIZE
         page_df  = self._filtered_df.iloc[offset : offset + PAGE_SIZE]
@@ -193,32 +197,41 @@ class AllStocksView(QWidget):
         self._code_row_map = {}
 
         for row, (_, rec) in enumerate(page_df.iterrows()):
-            code  = str(rec["종목코드"])
-            name  = str(rec["종목명"])
+            code   = str(rec["종목코드"])
+            name   = str(rec["종목명"])
             market = str(rec["시장코드"])
-            theme = self._code_to_theme.get(code, "—")
+            theme  = self._code_to_theme.get(code, "—")
 
             self._set_cell(row, 0, name)
             self._set_cell(row, 1, code,   align=Qt.AlignmentFlag.AlignCenter)
             self._set_cell(row, 2, market, align=Qt.AlignmentFlag.AlignCenter)
             self._set_cell(row, 3, theme)
             self._set_cell(row, 4, "로딩 중...", color="#555555", align=Qt.AlignmentFlag.AlignRight)
-            self._set_cell(row, 5, "—",        color="#888888", align=Qt.AlignmentFlag.AlignCenter)
+            self._set_cell(row, 5, "—",         color="#888888", align=Qt.AlignmentFlag.AlignCenter)
 
             self._code_row_map[code] = row
 
         # 백그라운드 가격 조회
         codes = [str(r["종목코드"]) for _, r in page_df.iterrows()]
         if not codes:
-            self._price_thread = None
             return
+
         self._price_thread = PriceLoaderThread(codes=codes)
         self._price_thread.price_loaded.connect(self._on_price_loaded)
-        self._price_thread.finished.connect(self._on_price_thread_done)
         self._price_thread.start()
 
-    def _on_price_thread_done(self):
-        # 정상 완료 시 참조 해제 — C++ 객체 삭제 후 isRunning() 호출 방지
+    def _stop_price_thread(self):
+        """현재 스레드 시그널 해제 + 인터럽트 요청. 참조는 _running_threads가 유지."""
+        if self._price_thread is None:
+            return
+        try:
+            self._price_thread.price_loaded.disconnect(self._on_price_loaded)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            self._price_thread.requestInterruption()
+        except RuntimeError:
+            pass
         self._price_thread = None
 
     def _on_price_loaded(self, code: str, price: str, sign: str):
@@ -238,27 +251,8 @@ class AllStocksView(QWidget):
             self.stock_selected.emit(code_item.text(), name_item.text())
 
     def stop_loading(self):
-        """위젯 제거 전 호출 — 진행 중인 가격 조회 스레드를 안전하게 중단"""
-        if self._price_thread and self._price_thread.isRunning():
-            self._retire_thread(self._price_thread)
-            self._price_thread = None
-        for thread in list(self._retired_threads):
-            if thread.isRunning():
-                thread.requestInterruption()
-
-    def _retire_thread(self, thread: PriceLoaderThread):
-        try:
-            thread.price_loaded.disconnect(self._on_price_loaded)
-        except TypeError:
-            pass
-        thread.requestInterruption()
-        self._retired_threads.append(thread)
-        thread.finished.connect(lambda t=thread: self._forget_thread(t))
-
-    def _forget_thread(self, thread: PriceLoaderThread):
-        if thread in self._retired_threads:
-            self._retired_threads.remove(thread)
-        thread.deleteLater()
+        """위젯 제거 전 호출 — 진행 중인 가격 조회 스레드 인터럽트 요청"""
+        self._stop_price_thread()
 
     # ── 유틸 ──────────────────────────────────────────────────────────────
 
